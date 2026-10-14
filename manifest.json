@@ -1,0 +1,13 @@
+{
+  "name": "Ghost Variable Cleaner",
+  "id": "ghost-variable-cleaner-dev",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "permissions": ["teamlibrary"],
+  "networkAccess": {
+    "allowedDomains": ["none"]
+  }
+}

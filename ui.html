@@ -1,0 +1,303 @@
+<!--
+  Ghost Variable Cleaner — plugin window
+  This is an ordinary web page shown inside Figma. It cannot touch the
+  document itself; it sends requests to code.js and draws whatever comes back.
+-->
+<style>
+  :root {
+    --bg: var(--figma-color-bg, #ffffff);
+    --bg-2: var(--figma-color-bg-secondary, #f5f5f5);
+    --text: var(--figma-color-text, #1e1e1e);
+    --muted: var(--figma-color-text-secondary, #6b6b6b);
+    --border: var(--figma-color-border, #e6e6e6);
+    --brand: var(--figma-color-bg-brand, #0d99ff);
+    --on-brand: var(--figma-color-text-onbrand, #ffffff);
+    --danger: var(--figma-color-text-danger, #d9342b);
+    --danger-bg: var(--figma-color-bg-danger-tertiary, #fde8e7);
+    --warn: var(--figma-color-text-warning, #a35a00);
+    --warn-bg: var(--figma-color-bg-warning-tertiary, #fff1db);
+    --info-bg: var(--figma-color-bg-tertiary, #ededed);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 12px/1.45 Inter, system-ui, sans-serif;
+    color: var(--text); background: var(--bg);
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .sub { color: var(--muted); margin: 0 0 12px; }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  .seg { display: flex; flex: 1; background: var(--bg-2); border-radius: 6px; padding: 2px; }
+  .seg button {
+    flex: 1; border: 0; background: transparent; color: var(--muted);
+    padding: 5px 0; border-radius: 4px; font: inherit; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
+  .btn {
+    border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 500;
+    cursor: pointer; background: var(--brand); color: var(--on-brand);
+  }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn.ghost { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+  .btn.confirm { background: var(--danger); color: #fff; }
+
+  main { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .status { padding: 8px 16px; color: var(--muted); }
+  .status.error { color: var(--danger); }
+  .summary { padding: 6px 16px 10px; display: flex; justify-content: space-between; align-items: center; }
+  .summary strong { font-weight: 600; }
+  .link { background: none; border: 0; padding: 0; color: var(--brand); font: inherit; cursor: pointer; }
+
+  .row {
+    display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: start;
+    padding: 8px 16px; border-top: 1px solid var(--border);
+  }
+  .row input { margin: 2px 0 0; }
+  .name { font-weight: 500; word-break: break-word; }
+  .meta { color: var(--muted); }
+  .right { text-align: right; white-space: nowrap; }
+  .pill { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .pill.missing { background: var(--danger-bg); color: var(--danger); }
+  .pill.orphaned { background: var(--warn-bg); color: var(--warn); }
+  .pill.unknown { background: var(--info-bg); color: var(--muted); }
+
+  .empty { text-align: center; padding: 40px 24px; color: var(--muted); }
+  .empty strong { display: block; color: var(--text); font-size: 13px; margin-bottom: 4px; }
+
+  footer { border-top: 1px solid var(--border); padding: 10px 16px 12px; }
+  footer .note { color: var(--muted); margin-bottom: 8px; }
+  footer .btn { width: 100%; padding: 8px 12px; }
+  .report { margin: 0 16px 8px; padding: 8px 10px; border-radius: 6px; background: var(--bg-2); }
+  .match { color: var(--brand); }
+  .actions { display: flex; gap: 8px; }
+  .actions .btn { flex: 1; }
+</style>
+
+<header>
+  <h1>Ghost Variable Cleaner</h1>
+  <p class="sub">Finds variables from deleted or disconnected libraries that are still attached to your layers, and detaches them, or reconnects them to the same-named variables in your current library.</p>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Scope">
+      <button data-scope="selection" aria-pressed="false">Selection</button>
+      <button data-scope="page" aria-pressed="true">This page</button>
+      <button data-scope="document" aria-pressed="false">All pages</button>
+    </div>
+    <button class="btn" id="scan">Scan</button>
+  </div>
+</header>
+
+<main id="main">
+  <div class="empty">
+    <strong>Ready to scan</strong>
+    Pick a scope and press Scan. Nothing changes until you choose to detach.
+  </div>
+</main>
+
+<footer id="footer" hidden>
+  <div class="note" id="note"></div>
+  <div class="actions">
+    <button class="btn ghost" id="reconnect" disabled>Reconnect</button>
+    <button class="btn" id="clean" disabled>Detach</button>
+  </div>
+</footer>
+
+<script>
+  var scope = 'page';
+  var groups = [];
+  var checked = new Set();
+  var confirming = null; // null, 'detach' or 'reconnect': which button is armed
+  var lastReport = null;
+
+  var STATUS_LABEL = { missing: 'Missing', orphaned: 'Library disconnected', unknown: 'Check library' };
+  var STATUS_ORDER = { missing: 0, orphaned: 1, unknown: 2 };
+
+  var main = document.getElementById('main');
+  var footer = document.getElementById('footer');
+  var cleanBtn = document.getElementById('clean');
+  var reconnectBtn = document.getElementById('reconnect');
+  var note = document.getElementById('note');
+  var scanBtn = document.getElementById('scan');
+
+  function post(msg) { parent.postMessage({ pluginMessage: msg }, '*'); }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+  // Scope buttons
+  document.querySelectorAll('.seg button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      scope = b.dataset.scope;
+      document.querySelectorAll('.seg button').forEach(function (x) {
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+    });
+  });
+
+  scanBtn.addEventListener('click', function () {
+    lastReport = null;
+    setBusy('Starting scan…');
+    post({ type: 'scan', scope: scope });
+  });
+
+  // Ticked ghosts that found a same-named replacement during the scan.
+  function matchedKeys() {
+    return groups.filter(function (g) { return g.match && checked.has(g.key); })
+                 .map(function (g) { return g.key; });
+  }
+
+  // Two-step confirm: the first click arms a button, the second runs it.
+  function armOrRun(action, keys, busyText) {
+    if (!keys.length) return;
+    if (confirming !== action) {
+      confirming = action;
+      renderFooter();
+      return;
+    }
+    confirming = null;
+    setBusy(busyText);
+    post({ type: action === 'detach' ? 'clean' : 'reconnect', keys: keys });
+  }
+  cleanBtn.addEventListener('click', function () {
+    armOrRun('detach', Array.from(checked), 'Detaching…');
+  });
+  reconnectBtn.addEventListener('click', function () {
+    armOrRun('reconnect', matchedKeys(), 'Reconnecting…');
+  });
+
+  function setBusy(text) {
+    scanBtn.disabled = true;
+    cleanBtn.disabled = true;
+    reconnectBtn.disabled = true;
+    main.innerHTML = '<div class="status">' + esc(text) + '</div>';
+  }
+
+  function renderFooter() {
+    var matched = matchedKeys().length;
+    footer.hidden = groups.length === 0;
+
+    cleanBtn.disabled = checked.size === 0;
+    cleanBtn.classList.toggle('confirm', confirming === 'detach');
+    cleanBtn.textContent = confirming === 'detach'
+      ? 'Click again to detach ' + checked.size
+      : 'Detach (' + checked.size + ')';
+
+    reconnectBtn.hidden = !groups.some(function (g) { return g.match; });
+    reconnectBtn.disabled = matched === 0;
+    reconnectBtn.classList.toggle('confirm', confirming === 'reconnect');
+    reconnectBtn.textContent = confirming === 'reconnect'
+      ? 'Click again to reconnect ' + matched
+      : 'Reconnect (' + matched + ')';
+
+    note.textContent = confirming === 'reconnect'
+      ? 'Reconnect links each ghost to its same-named variable, so layers take that variable\'s value. One Cmd/Ctrl+Z undoes it.'
+      : 'Detach keeps layers looking exactly as they do now. One Cmd/Ctrl+Z undoes the whole clean-up.';
+  }
+
+  function render(data) {
+    scanBtn.disabled = false;
+    groups = data.groups.slice().sort(function (a, b) {
+      return (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) || (b.layers - a.layers);
+    });
+    checked = new Set(groups.filter(function (g) { return g.status !== 'unknown'; })
+                            .map(function (g) { return g.key; }));
+    confirming = null;
+
+    var html = '';
+    if (lastReport) {
+      html += '<div class="report">' + (lastReport.action === 'reconnect' ? 'Reconnected ' : 'Detached ') +
+        plural(lastReport.done, 'binding') + '.';
+      if (lastReport.failed) {
+        html += ' ' + lastReport.failed + ' could not be changed: ' +
+          lastReport.reasons.map(function (r) { return esc(r.reason) + ' (' + r.count + ')'; }).join('; ') + '.';
+      }
+      html += '</div>';
+    }
+
+    var healthyText = plural(data.healthy.local, 'local variable') + ' and ' +
+      plural(data.healthy.library, 'library variable') + ' are healthy.';
+
+    if (!groups.length) {
+      html += '<div class="empty"><strong>No ghosts found</strong>' +
+        'Scanned ' + plural(data.scannedLayers, 'layer') + '. ' + healthyText + '</div>';
+      main.innerHTML = html;
+      renderFooter();
+      return;
+    }
+
+    var totalLayers = groups.reduce(function (s, g) { return s + g.layers; }, 0);
+    html += '<div class="summary"><span><strong>' + plural(groups.length, 'ghost') + '</strong> on ' +
+      plural(totalLayers, 'layer') + ' · ' + esc(healthyText) + '</span>' +
+      '<button class="link" id="toggleAll">' + (checked.size === groups.length ? 'None' : 'All') + '</button></div>';
+
+    if (!data.librariesChecked) {
+      html += '<div class="report">Figma did not tell the plugin which libraries are enabled, so library variables are marked "Check library". Review those before detaching.</div>';
+    }
+
+    groups.forEach(function (g) {
+      var meta = g.kind === 'mode'
+        ? esc(g.library)
+        : esc(g.collection) + ' · ' + esc(g.library);
+      html += '<label class="row">' +
+        '<input type="checkbox" data-key="' + esc(g.key) + '"' + (checked.has(g.key) ? ' checked' : '') + '>' +
+        '<div><div class="name" title="' + esc(g.id) + '">' + esc(g.name) + '</div>' +
+        '<div class="meta">' + meta + '</div>' +
+        (g.match ? '<div class="meta match">Can reconnect to ' + esc(g.match.name) + ' · ' + esc(g.match.library) + '</div>' : '') +
+        '</div>' +
+        '<div class="right"><span class="pill ' + g.status + '">' + STATUS_LABEL[g.status] + '</span>' +
+        '<div class="meta">' + plural(g.layers, 'layer') + (g.pages > 1 ? ' · ' + g.pages + ' pages' : '') + '</div>' +
+        '<button class="link" data-show="' + esc(g.key) + '">Show</button></div>' +
+        '</label>';
+    });
+
+    main.innerHTML = html;
+
+    main.querySelectorAll('input[type=checkbox]').forEach(function (box) {
+      box.addEventListener('change', function () {
+        if (box.checked) checked.add(box.dataset.key); else checked.delete(box.dataset.key);
+        confirming = null;
+        renderFooter();
+      });
+    });
+    main.querySelectorAll('[data-show]').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.preventDefault();
+        post({ type: 'show', key: b.dataset.show });
+      });
+    });
+    var toggle = document.getElementById('toggleAll');
+    toggle.addEventListener('click', function (e) {
+      e.preventDefault();
+      var selectAll = checked.size !== groups.length;
+      checked = new Set(selectAll ? groups.map(function (g) { return g.key; }) : []);
+      main.querySelectorAll('input[type=checkbox]').forEach(function (box) { box.checked = selectAll; });
+      toggle.textContent = selectAll ? 'None' : 'All';
+      confirming = null;
+      renderFooter();
+    });
+
+    renderFooter();
+  }
+
+  // Messages from code.js
+  window.onmessage = function (event) {
+    var msg = event.data && event.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === 'progress') {
+      main.innerHTML = '<div class="status">' + esc(msg.text) + '</div>';
+    } else if (msg.type === 'results') {
+      render(msg);
+    } else if (msg.type === 'cleaned') {
+      lastReport = msg;
+    } else if (msg.type === 'error') {
+      scanBtn.disabled = false;
+      main.innerHTML = '<div class="status error">' + esc(msg.text) + '</div>';
+      footer.hidden = true;
+    }
+  };
+</script>
